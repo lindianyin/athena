@@ -1,0 +1,23 @@
+# MSVC build artifacts
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.idb
+*.pch
+*.sbr
+*.bsc
+*.res
+*.aps
+*.ncb
+*.suo
+*.user
+*.VC.db
+*.VC.opendb
+.vs/
+x64/
+Win32/
+Debug/
+Release/
