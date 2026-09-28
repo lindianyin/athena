@@ -21,3 +21,6 @@ x64/
 Win32/
 Debug/
 Release/
+
+# 发布用单文件 exe（允许提交）
+!tools/word2pdfpng/word2pdfpng.exe
