@@ -20,6 +20,9 @@ std::wstring GetFileName(const std::wstring& fullPath);
 // 转为带盘符的绝对路径（失败则返回原字符串）
 std::wstring NormalizeAbsolutePath(const std::wstring& path);
 
+// 小写扩展名（含点，如 L".xlsx"；无扩展名时为空）
+std::wstring GetExtensionLower(const std::wstring& fullPath);
+
 // 将扩展名替换为 newExt（应包含点，如 L".pdf"）
 std::wstring ReplaceExtension(const std::wstring& fullPath, const std::wstring& newExt);
 

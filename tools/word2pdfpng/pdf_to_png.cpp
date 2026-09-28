@@ -33,6 +33,9 @@ using namespace winrt::Windows::Storage::Streams;
 namespace {
 
 constexpr int32_t kMaxStitchedHeight = 65500;
+// PDF 页渲染分辨率（DIP 基准为 96）；提高到 220 DPI 以改善 PNG 清晰度
+constexpr float kRenderDpi = 220.f;
+constexpr float kDipDpi = 96.f;
 
 struct BitmapView {
     const uint8_t* data = nullptr;
@@ -101,6 +104,36 @@ void BlitScaleCentered(const BitmapView& src, uint8_t* dst, uint32_t dstStride, 
             std::memcpy(dstRow + static_cast<size_t>(x) * 4, srcRow + static_cast<size_t>(sx) * 4, 4);
         }
     }
+}
+
+bool IsMostlyBlankPage(const SoftwareBitmap& bitmap) {
+    std::vector<uint8_t> pixels;
+    BitmapView view{};
+    if (!CopySoftwareBitmapPixels(bitmap, pixels, view) || view.width == 0 || view.height == 0 ||
+        !view.data) {
+        return true;
+    }
+
+    uint64_t total = 0;
+    uint64_t white = 0;
+    // 抽样检测：步长加大，空白页几乎全白
+    constexpr uint32_t kStepX = 16;
+    constexpr uint32_t kStepY = 16;
+    for (uint32_t y = 0; y < view.height; y += kStepY) {
+        const uint8_t* row = view.data + static_cast<size_t>(y) * view.stride;
+        for (uint32_t x = 0; x < view.width; x += kStepX) {
+            const uint8_t* p = row + static_cast<size_t>(x) * 4;
+            ++total;
+            if (p[0] >= 250 && p[1] >= 250 && p[2] >= 250) {
+                ++white;
+            }
+        }
+    }
+    if (total == 0) {
+        return true;
+    }
+    // 超过 99.2% 近似白色视为空白页
+    return (white * 1000) >= (total * 992);
 }
 
 bool StitchPagesVertically(const std::vector<SoftwareBitmap>& pages, SoftwareBitmap& stitched,
@@ -222,7 +255,17 @@ bool WriteStreamToStorageFile(IRandomAccessStream const& dataStream, const Stora
 
 bool ConvertPdfToPngFiles(const std::wstring& pdfPath, const std::wstring& wordPathForNaming,
                           std::vector<std::wstring>& pngPaths, std::wstring& errorMsg) {
+    return ConvertPdfsToPngFiles({pdfPath}, wordPathForNaming, pngPaths, errorMsg);
+}
+
+bool ConvertPdfsToPngFiles(const std::vector<std::wstring>& pdfPaths,
+                           const std::wstring& pathForNaming, std::vector<std::wstring>& pngPaths,
+                           std::wstring& errorMsg) {
     pngPaths.clear();
+    if (pdfPaths.empty()) {
+        errorMsg = L"没有可转换的 PDF。";
+        return false;
+    }
 
     try {
         init_apartment(apartment_type::single_threaded);
@@ -230,28 +273,46 @@ bool ConvertPdfToPngFiles(const std::wstring& pdfPath, const std::wstring& wordP
     }
 
     try {
-        StorageFile pdfFile = StorageFile::GetFileFromPathAsync(pdfPath).get();
-        PdfDocument pdfDoc = PdfDocument::LoadFromFileAsync(pdfFile).get();
-        const uint32_t pageCount = pdfDoc.PageCount();
-        if (pageCount == 0) {
-            errorMsg = L"PDF \u6ca1\u6709\u53ef\u6e32\u67d3\u7684\u9875\u9762\u3002";
-            return false;
+        std::vector<SoftwareBitmap> pageBitmaps;
+
+        for (const auto& pdfPath : pdfPaths) {
+            StorageFile pdfFile = StorageFile::GetFileFromPathAsync(pdfPath).get();
+            PdfDocument pdfDoc = PdfDocument::LoadFromFileAsync(pdfFile).get();
+            const uint32_t pageCount = pdfDoc.PageCount();
+            if (pageCount == 0) {
+                continue;
+            }
+
+            for (uint32_t i = 0; i < pageCount; ++i) {
+                PdfPage page = pdfDoc.GetPage(i);
+                InMemoryRandomAccessStream bmpStream;
+                PdfPageRenderOptions options;
+                const auto pageSize = page.Size();
+                const uint32_t destW = (std::max)(
+                    1u, static_cast<uint32_t>(
+                            std::lround(pageSize.Width * kRenderDpi / kDipDpi)));
+                const uint32_t destH = (std::max)(
+                    1u, static_cast<uint32_t>(
+                            std::lround(pageSize.Height * kRenderDpi / kDipDpi)));
+                options.DestinationWidth(destW);
+                options.DestinationHeight(destH);
+                page.RenderToStreamAsync(bmpStream, options).get();
+                bmpStream.Seek(0);
+
+                BitmapDecoder decoder = BitmapDecoder::CreateAsync(bmpStream).get();
+                SoftwareBitmap bitmap =
+                    ToBgra8Premultiplied(decoder.GetSoftwareBitmapAsync().get());
+                // 跳过几乎全白的空白页，避免长图中间大片留白
+                if (!IsMostlyBlankPage(bitmap)) {
+                    pageBitmaps.push_back(bitmap);
+                }
+                page.Close();
+            }
         }
 
-        std::vector<SoftwareBitmap> pageBitmaps;
-        pageBitmaps.reserve(pageCount);
-
-        for (uint32_t i = 0; i < pageCount; ++i) {
-            PdfPage page = pdfDoc.GetPage(i);
-            InMemoryRandomAccessStream bmpStream;
-            PdfPageRenderOptions options;
-            page.RenderToStreamAsync(bmpStream, options).get();
-            bmpStream.Seek(0);
-
-            BitmapDecoder decoder = BitmapDecoder::CreateAsync(bmpStream).get();
-            SoftwareBitmap bitmap = ToBgra8Premultiplied(decoder.GetSoftwareBitmapAsync().get());
-            pageBitmaps.push_back(bitmap);
-            page.Close();
+        if (pageBitmaps.empty()) {
+            errorMsg = L"PDF 没有可渲染的页面。";
+            return false;
         }
 
         SoftwareBitmap stitched{nullptr};
@@ -264,7 +325,7 @@ bool ConvertPdfToPngFiles(const std::wstring& pdfPath, const std::wstring& wordP
             return false;
         }
 
-        const std::wstring pngPath = util::MakePngPath(wordPathForNaming);
+        const std::wstring pngPath = util::MakePngPath(pathForNaming);
         const std::wstring dir = util::GetDirectory(pngPath);
         const std::wstring fileName = util::GetFileName(pngPath);
         StorageFolder folder = StorageFolder::GetFolderFromPathAsync(dir).get();
@@ -278,10 +339,10 @@ bool ConvertPdfToPngFiles(const std::wstring& pdfPath, const std::wstring& wordP
         pngPaths.push_back(pngPath);
         return true;
     } catch (const winrt::hresult_error& e) {
-        errorMsg = L"PDF \u8f6c PNG \u5931\u8d25\uff1a" + std::wstring(e.message().c_str());
+        errorMsg = L"PDF 转 PNG 失败：" + std::wstring(e.message().c_str());
         return false;
     } catch (...) {
-        errorMsg = L"PDF \u8f6c PNG \u65f6\u53d1\u751f\u672a\u77e5\u9519\u8bef\u3002";
+        errorMsg = L"PDF 转 PNG 时发生未知错误。";
         return false;
     }
 }

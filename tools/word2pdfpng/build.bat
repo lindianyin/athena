@@ -22,7 +22,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-set SRC=main.cpp word_export.cpp pdf_to_png.cpp util.cpp
+set SRC=main.cpp word_export.cpp excel_export.cpp pdf_to_png.cpp util.cpp
 set OUT=word2pdfpng.exe
 
 echo 正在编译 %OUT% ...

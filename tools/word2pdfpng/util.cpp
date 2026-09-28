@@ -4,6 +4,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cwctype>
 #include <iterator>
 
 #pragma comment(lib, "shlwapi.lib")
@@ -55,6 +56,17 @@ std::wstring NormalizeAbsolutePath(const std::wstring& path) {
         return path;
     }
     return buf;
+}
+
+std::wstring GetExtensionLower(const std::wstring& fullPath) {
+    wchar_t ext[MAX_PATH]{};
+    if (_wsplitpath_s(fullPath.c_str(), nullptr, 0, nullptr, 0, nullptr, 0, ext, MAX_PATH) != 0) {
+        return L"";
+    }
+    for (wchar_t* p = ext; *p; ++p) {
+        *p = static_cast<wchar_t>(towlower(*p));
+    }
+    return ext;
 }
 
 std::wstring ReplaceExtension(const std::wstring& fullPath, const std::wstring& newExt) {
